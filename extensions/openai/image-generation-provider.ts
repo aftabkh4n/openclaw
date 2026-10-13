@@ -6,7 +6,6 @@ import type {
   ImageGenerationProvider,
   ImageGenerationResult,
 } from "openclaw/plugin-sdk/image-generation";
-import type { resolveClosestSize } from "openclaw/plugin-sdk/media-generation-runtime";
 import { extensionForMime } from "openclaw/plugin-sdk/media-mime";
 import { resolveIntegerOption } from "openclaw/plugin-sdk/number-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -28,6 +27,10 @@ import {
   OPENAI_CODEX_DEFAULT_MODEL,
   OPENAI_DEFAULT_IMAGE_MODEL as DEFAULT_OPENAI_IMAGE_MODEL,
 } from "./default-models.js";
+import {
+  resolveOpenAIImageGeometry,
+  resolveOpenAIImageRequestSize,
+} from "./image-generation-sizes.js";
 import { resolveModelAuthPolicy } from "./provider-policy-api.js";
 import { resolveConfiguredOpenAIBaseUrl } from "./shared.js";
 
@@ -42,17 +45,6 @@ const OPENAI_TRANSPARENT_BACKGROUND_IMAGE_MODEL = "gpt-image-1.5";
 const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 180_000;
 const DEFAULT_AZURE_OPENAI_IMAGE_TIMEOUT_MS = 600_000;
 const DEFAULT_OUTPUT_MIME = "image/png";
-const DEFAULT_SIZE = "1024x1024";
-const OPENAI_SUPPORTED_SIZES = [
-  "1024x1024",
-  "1536x1024",
-  "1024x1536",
-  "2048x2048",
-  "2048x1152",
-  "3840x2160",
-  "2160x3840",
-] as const;
-const OPENAI_LEGACY_IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
 const OPENAI_MAX_INPUT_IMAGES = 5;
 const OPENAI_MAX_IMAGE_RESULTS = 4;
 const LOG_VALUE_MAX_CHARS = 256;
@@ -202,16 +194,6 @@ function resolveOpenAIImageRequestModel(
   return model;
 }
 
-function resolveNativeOpenAIImageSizesForModel(model: string): readonly string[] {
-  switch (model) {
-    case "gpt-image-1":
-    case "gpt-image-1-mini":
-      return OPENAI_LEGACY_IMAGE_SIZES;
-    default:
-      return OPENAI_SUPPORTED_SIZES;
-  }
-}
-
 function isValidFlexibleOpenAIImageSize(model: string, size: string | undefined): size is string {
   if (!OPENAI_FLEXIBLE_IMAGE_MODELS.some((candidate) => candidate === model)) {
     return false;
@@ -245,39 +227,6 @@ function resolveConfiguredOpenAIImageBaseUrl(cfg: OpenClawConfig | undefined, mo
     ?.find((candidate) => candidate.id.trim().replace(/^openai\//u, "") === modelId)
     ?.baseUrl?.trim();
   return modelBaseUrl || resolveConfiguredOpenAIBaseUrl(cfg);
-}
-
-function resolveOpenAIImageRequestSize(
-  params: {
-    model: string;
-    requestedSize?: string;
-    applyNativeLimits: boolean;
-  },
-  resolveSize: typeof resolveClosestSize,
-): {
-  size: string;
-  metadata?: Record<string, string>;
-} {
-  const requestedSize = params.requestedSize ?? DEFAULT_SIZE;
-  if (!params.applyNativeLimits) {
-    return { size: requestedSize };
-  }
-  const supportedSizes = resolveNativeOpenAIImageSizesForModel(params.model);
-  const size =
-    resolveSize({
-      requestedSize,
-      supportedSizes,
-    }) ?? DEFAULT_SIZE;
-  if (size === requestedSize) {
-    return { size };
-  }
-  return {
-    size,
-    metadata: {
-      requestedSize,
-      normalizedSize: size,
-    },
-  };
 }
 
 function shouldAllowPrivateImageEndpoint(req: {
@@ -685,11 +634,7 @@ export function buildOpenAIImageGenerationProvider(
         supportsAspectRatio: false,
         supportsResolution: false,
       },
-      geometry: {
-        sizes: [...OPENAI_SUPPORTED_SIZES],
-        // Empty model-specific lists stop core from snapping valid flexible dimensions.
-        sizesByModel: Object.fromEntries(OPENAI_FLEXIBLE_IMAGE_MODELS.map((model) => [model, []])),
-      },
+      geometry: resolveOpenAIImageGeometry(OPENAI_FLEXIBLE_IMAGE_MODELS),
       output: {
         formats: [...OPENAI_OUTPUT_FORMATS],
         qualities: [...OPENAI_QUALITIES],
